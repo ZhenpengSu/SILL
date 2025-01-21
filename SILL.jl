@@ -3,11 +3,14 @@ L: Magnetic shell
 c_0: Speed of light in unit of m/s
 E_0: Rest mass energy in units of MeV
 Re: Earth radius
+αₗ: Loss cone angle in units of rad
 
 Δt: Time step in units of s
 trecord: Time points to record the PSD
 
-boundaryTα and boundaryTξ: Boundary conditions along the α and ξ=ln(p) directions respectively; first element represents lower boundary and second element represents upper boundary; 0 represents fixed boundary condition and -1 represents equivalent extrapolation boundary condition
+boundaryTα and boundaryTξ: Boundary conditions along α and ξ=ln(p) directions, respectively; the first element represents the lower boundary and the second element represents the upper boundary; 0 represents the fixed boundary condition, -1 represents the equivalent extrapolation boundary condition, and 1 represents the time-varying boundary condition (i.e., a variant of the condition f = 0).
+
+ς: the parameter for the time varying boundary condition (i.e., a variant of the condition f = 0): f|_{x=begin, t} = \left(\frac{f|_{x=begin + \Delta x, t-\Delta t}}{\max(f)}\right)^\varsigma f|_{x=begin + \Delta x, t-\Delta t}; f|_{y=end, t} = \left(\frac{f|_{x=end - \Delta y, t-\Delta t}}{\max(f)}\right)^\varsigma f|_{x=end - \Delta y, t-\Delta t}. 
 
 dcfile: File containing diffusion coefficients and grids
 nα: Number of grid points along the pitch angle direction
@@ -17,7 +20,6 @@ p: Momentums dimensionlessed by mₑc
 Dαα, Dαp, and Dpp: Pitch-angle, cross, momentum diffusion coefficients
 Dαα, Dαp/p, and Dpp/p^2 in unites of 1/s
 
-αₗ: Loss cone angle in units of rad
 tau: A quarter of the bounce period in units of s
 rtau: Reciprocal of tau inside the loss cone and zero outside the loss cone.
 =#
@@ -30,7 +32,7 @@ using CairoMakie
 
 
 #Read diffusion coefficients and grids
-function readbd(file) 
+function readbd(file, αₗ, boundaryTα) 
     f = jldopen(file, "r")
 	nα = f["nα"]
     np = f["np"]
@@ -40,7 +42,13 @@ function readbd(file)
     Dαp = f["Dαp"]
     Dpp = f["Dpp"]
 	close(f)
-    return nα, np, α, p, Dαα, Dpp, Dαp
+	
+	if boundaryTα[begin] == -1
+		return nα, np, α, p, Dαα, Dpp, Dαp
+	else #set left boundary condition location for the time varying boundary condition along the α
+		αlbindex = findfirst(x -> x > αₗ, α)
+		return nα-(αlbindex-1), np, α[αlbindex:end], p, Dαα[αlbindex:end,:], Dpp[αlbindex:end,:], Dαp[αlbindex:end,:]
+	end
 end
 
 #Central difference approximation for the first order derivatives
@@ -95,25 +103,25 @@ function solve1d(a, b, c, d, w, Δx, Δt, boundaryT)
 	B = @. (-w/Δt - d)
 
 	#lower boundary
-	if boundaryT[begin] == 0 #constant boundary condition
-		dd[begin] = 1.0
-		du[begin] = 0.0
-		B[begin] = w[begin]
-	elseif boundaryT[begin] == -1 #equivalence extrapolation boundary condition
+	if boundaryT[begin] == -1 #equivalence extrapolation boundary condition
 		dd[begin] = 1.0
 		du[begin] = -1.0
 		B[begin] = 0.0
+	else #constant boundary condition or time varying boundary condition
+		dd[begin] = 1.0
+		du[begin] = 0.0
+		B[begin] = w[begin]
 	end
 
 	#upper boundary
-	if boundaryT[end] == 0 #constant boundary condition
-		dd[end] = 1.0
-		dl[end] = 0.0
-		B[end] = w[end]
-	elseif boundaryT[end] == -1 #equivalence extrapolation boundary condition
+	if boundaryT[end] == -1 #equivalence extrapolation boundary condition
 		dd[end] = 1.0
 		dl[end] = -1.0
 		B[end] = 0.0
+	else  #constant boundary condition or time varying boundary condition
+		dd[end] = 1.0
+		dl[end] = 0.0
+		B[end] = w[end]
 	end
 
 	A = Tridiagonal(dl[begin+1:end], dd, du[begin:end-1])
@@ -125,27 +133,39 @@ end
 
 	Determine the required inputs to solve1d, with the equivalence extrapolation boundary condition at α=0
 """
-function solve2d(αa2d, αb2d, αc2d, ξa2d, ξb2d, ξc2d, d2d, psd, rtau, Δα, Δξ)
+function solve2d(αa2d, αb2d, αc2d, ξa2d, ξb2d, ξc2d, d2d, psd, rtau, Δα, Δξ, boundaryTα, boundaryTξ, ς, maxlnf)
 
 	#α-direction
+	if boundaryTα[begin] == 1  #updated boundary value for the time varying boundary condition
+		psd[begin,:].=psd[begin+1,:].*(ς+1).-ς*maxlnf
+	end
 	αd2d = d2d .* ( cda(psd, Δα, 1) .* cda(psd, Δξ, 2) .+  cdam(psd, Δα, Δξ)) .- rtau
 	psdt = stack([solve1dα(a, b, c, d, w) for (a, b, c, d, w) in zip(eachcol(αa2d), eachcol(αb2d), eachcol(αc2d), eachcol(αd2d), eachcol(psd))])
 	psdt[:, begin]=@view psd[:, begin]
 	psdt[:, end]=@view psdt[:, end-1]
 	
 	#ξ-direction
+	if boundaryTξ[end] == 1  #updated boundary value for the time varying boundary condition
+		psdt[:,end].=psdt[:,end-1].*(ς+1).-ς*maxlnf
+	end
 	ξd2d = d2d .* ( cda(psdt, Δα, 1) .* cda(psdt, Δξ, 2) .+  cdam(psdt, Δα, Δξ))
 	psdt = stack([solve1dξ(a, b, c, d, w) for (a, b, c, d, w) in zip(eachrow(ξa2d), eachrow(ξb2d), eachrow(ξc2d), eachrow(ξd2d), eachrow(psdt))])'
 	psdt[begin, :]=@view psdt[begin+1, :]
 	psdt[end, :]=@view psdt[end-1, :]
 	
 	#ξ-direction
+	if boundaryTξ[end] == 1  #updated boundary value for the time varying boundary condition
+		psdt[:,end].=psdt[:,end-1].*(ς+1).-ς*maxlnf
+	end
 	ξd2d = d2d .* ( cda(psdt, Δα, 1) .* cda(psdt, Δξ, 2) .+  cdam(psdt, Δα, Δξ))
 	psdt = stack([solve1dξ(a, b, c, d, w) for (a, b, c, d, w) in zip(eachrow(ξa2d), eachrow(ξb2d), eachrow(ξc2d), eachrow(ξd2d), eachrow(psdt))])'
 	psdt[begin, :]=@view psdt[begin+1, :]
 	psdt[end, :]=@view psdt[end-1, :]
 
 	#α-direction
+	if boundaryTα[begin] == 1  #updated boundary value for the time varying boundary condition
+		psdt[begin,:].=psdt[begin+1,:].*(ς+1).-ς*maxlnf
+	end
 	αd2d = d2d .* ( cda(psdt, Δα, 1) .* cda(psdt, Δξ, 2) .+  cdam(psdt, Δα, Δξ)) .- rtau
 	psdt = stack([solve1dα(a, b, c, d, w) for (a, b, c, d, w) in zip(eachcol(αa2d), eachcol(αb2d), eachcol(αc2d), eachcol(αd2d), eachcol(psdt))])
 	psdt[:, begin]=@view psd[:, begin]
@@ -159,15 +179,19 @@ const L=4.5
 const c_0 = 3e8 
 const E_0 = 0.511
 const Re = 6376e3 
+const αₗ = asin(L^(-3.0/2.0)*(4.0-3.0/L)^(-1.0/4.0))
 
 const Δt = 20.0
 const trecord = collect(0:10).*8640.0
 
-const boundaryTα = [-1,-1]
-const boundaryTξ = [0,-1]
+#First element of boundaryTα can choose 1 or -1, second element of boundaryTα can choose -1, first element of boundaryTξ can choose 0 and second element of boundaryTξ can choose 1 or -1.
+const boundaryTα = [1,-1]
+const boundaryTξ = [0,1]
+
+const ς=9
 
 const dcfile = "DiffusionCoefficients.jld2"
-const nα, np, α, p, Dαα, Dpp, Dαp=readbd(dcfile)
+const nα, np, α, p, Dαα, Dpp, Dαp=readbd(dcfile, αₗ, boundaryTα)
 const ξ = @. log(p)
 const Δα = α[2]-α[1]
 const Δξ = ξ[2]-ξ[1]
@@ -177,9 +201,13 @@ const γ = @. sqrt(1.0 + p^2)
 const Ek = @. (γ - 1.0)*E_0
 const Tα = (1.30.-0.56sin.(α))
 const G =(Tα.*sin.(α).*cos.(α)) * (p.^2)' .+ 1e-20 
-const αₗ = asin(L^(-3.0/2.0)*(4.0-3.0/L)^(-1.0/4.0))
 const tau = Tα * (L*Re ./ (p./γ.*c_0))' 
-const rtau = [ α[i]<αₗ ? 1.0/tau[i, j] : 0.0  for i in eachindex(α), j in eachindex(ξ)]
+if boundaryTα[begin] == -1 
+	const rtau = [ α[i]<αₗ ? 1.0/tau[i, j] : 0.0  for i in eachindex(α), j in eachindex(ξ)] #set loss term for equivalent extrapolation lower boundary condition along the α
+else
+	const rtau =zeros(length(α),length(ξ)) #other boundary conditions have no loss term
+end
+
 
 #Derived coefficients for the 2D diffusion equation
 const p2d = repeat(p', nα, 1)
@@ -193,14 +221,16 @@ const d2d = Dαp ./ p2d
 
 solve1dα(a, b, c, d, w) = solve1d(a, b, c, d, w, Δα, Δt, boundaryTα)
 solve1dξ(a, b, c, d, w) = solve1d(a, b, c, d, w, Δξ, Δt, boundaryTξ)
-solve2dαξ(psd) = solve2d(αa2d, αb2d, αc2d, ξa2d, ξb2d, ξc2d, d2d, psd, rtau, Δα, Δξ)
+solve2dαξ(psd, maxlnf) = solve2d(αa2d, αb2d, αc2d, ξa2d, ξb2d, ξc2d, d2d, psd, rtau, Δα, Δξ, boundaryTα, boundaryTξ, ς, maxlnf)
+
 function fokkerplanck2d!(t, trecord, logpsdrecord)
 	tind = 2
 	tend = maximum(trecord)
 	logpsd = logpsdrecord[1,:,:]
+	maxlnf = maximum(logpsd)
 
 	while round(t; digits=1) < tend
-		logpsd = solve2dαξ(logpsd)
+		logpsd = solve2dαξ(logpsd, maxlnf)
 		t = t + 2.0Δt
 		if abs(round(t; digits=1)-trecord[tind])<2.0Δt
 			logpsdrecord[tind,:,:] .= logpsd
@@ -256,7 +286,7 @@ end
 
 t=0.0
 #initial condition
-psd0 = sin.(α) * (exp.(-(Ek.-0.2) ./0.1) ./(p.^2))'#
+psd0 = sin.(α) * (exp.(-(Ek.-0.2) ./0.1) ./(p.^2))'
 maxpsd0 = maximum(psd0)
 psd0 = psd0 ./ maxpsd0
 psd0[begin,:] = psd0[begin+1, :]
@@ -264,7 +294,7 @@ psd0[begin,:] = psd0[begin+1, :]
 logpsdrecord = zeros(length(trecord), length(α), length(ξ))
 logpsdrecord[1,:,:] = log.(psd0)
 
-fokkerplanck2d!(t, trecord, logpsdrecord)
+@time fokkerplanck2d!(t, trecord, logpsdrecord)
 
 psdrecord = exp.(logpsdrecord) .* maxpsd0
 ptime = [0, 1, 5, 10] .+ 1
@@ -272,7 +302,10 @@ ptime = [0, 1, 5, 10] .+ 1
 fig = plotflux(trecord, psdrecord, ptime)
 save("FPdemo.pdf", fig)
 
-
+jldopen("FPpsdDemonstration.jld2", "w") do file
+    file["logpsdrecord"] = logpsdrecord
+	file["trecord"] = trecord
+end
 
 
 #=
