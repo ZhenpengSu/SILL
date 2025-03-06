@@ -10,8 +10,6 @@ trecord: Time points to record the PSD
 
 boundaryTα and boundaryTξ: Boundary conditions along α and ξ=ln(p) directions, respectively; the first element represents the lower boundary and the second element represents the upper boundary; 0 represents the fixed boundary condition, -1 represents the equivalent extrapolation boundary condition, and 1 represents the time-varying boundary condition (i.e., a variant of the condition f = 0).
 
-ς: the parameter for the time varying boundary condition (i.e., a variant of the condition f = 0): f|_{x=begin, t} = \left(\frac{f|_{x=begin + \Delta x, t-\Delta t}}{\max(f)}\right)^\varsigma f|_{x=begin + \Delta x, t-\Delta t}; f|_{y=end, t} = \left(\frac{f|_{x=end - \Delta y, t-\Delta t}}{\max(f)}\right)^\varsigma f|_{x=end - \Delta y, t-\Delta t}. 
-
 dcfile: File containing diffusion coefficients and grids
 nα: Number of grid points along the pitch angle direction
 np: Number of grid points along the momentum direction
@@ -107,10 +105,14 @@ function solve1d(a, b, c, d, w, Δx, Δt, boundaryT)
 		dd[begin] = 1.0
 		du[begin] = -1.0
 		B[begin] = 0.0
-	else #constant boundary condition or time varying boundary condition
+	elseif boundaryT[begin] == 0 #constant boundary condition
 		dd[begin] = 1.0
 		du[begin] = 0.0
 		B[begin] = w[begin]
+	elseif boundaryT[begin] == 1 #time varying boundary condition
+		dd[begin] = 1.0
+		du[begin] = -1.0
+		B[begin] = -log(2.0)
 	end
 
 	#upper boundary
@@ -118,13 +120,14 @@ function solve1d(a, b, c, d, w, Δx, Δt, boundaryT)
 		dd[end] = 1.0
 		dl[end] = -1.0
 		B[end] = 0.0
-	else  #constant boundary condition or time varying boundary condition
+	else  #constant boundary condition
 		dd[end] = 1.0
 		dl[end] = 0.0
 		B[end] = w[end]
 	end
 
 	A = Tridiagonal(dl[begin+1:end], dd, du[begin:end-1])
+
 	return A \ B
 end
 
@@ -133,39 +136,27 @@ end
 
 	Determine the required inputs to solve1d, with the equivalence extrapolation boundary condition at α=0
 """
-function solve2d(αa2d, αb2d, αc2d, ξa2d, ξb2d, ξc2d, d2d, psd, rtau, Δα, Δξ, boundaryTα, boundaryTξ, ς, maxlnf)
+function solve2d(αa2d, αb2d, αc2d, ξa2d, ξb2d, ξc2d, d2d, psd, rtau, Δα, Δξ, boundaryTα, boundaryTξ)
 
 	#α-direction
-	if boundaryTα[begin] == 1  #updated boundary value for the time varying boundary condition
-		psd[begin,:].=psd[begin+1,:].*(ς+1).-ς*maxlnf
-	end
 	αd2d = d2d .* ( cda(psd, Δα, 1) .* cda(psd, Δξ, 2) .+  cdam(psd, Δα, Δξ)) .- rtau
 	psdt = stack([solve1dα(a, b, c, d, w) for (a, b, c, d, w) in zip(eachcol(αa2d), eachcol(αb2d), eachcol(αc2d), eachcol(αd2d), eachcol(psd))])
 	psdt[:, begin]=@view psd[:, begin]
 	psdt[:, end]=@view psdt[:, end-1]
 	
 	#ξ-direction
-	if boundaryTξ[end] == 1  #updated boundary value for the time varying boundary condition
-		psdt[:,end].=psdt[:,end-1].*(ς+1).-ς*maxlnf
-	end
 	ξd2d = d2d .* ( cda(psdt, Δα, 1) .* cda(psdt, Δξ, 2) .+  cdam(psdt, Δα, Δξ))
 	psdt = stack([solve1dξ(a, b, c, d, w) for (a, b, c, d, w) in zip(eachrow(ξa2d), eachrow(ξb2d), eachrow(ξc2d), eachrow(ξd2d), eachrow(psdt))])'
 	psdt[begin, :]=@view psdt[begin+1, :]
 	psdt[end, :]=@view psdt[end-1, :]
 	
 	#ξ-direction
-	if boundaryTξ[end] == 1  #updated boundary value for the time varying boundary condition
-		psdt[:,end].=psdt[:,end-1].*(ς+1).-ς*maxlnf
-	end
 	ξd2d = d2d .* ( cda(psdt, Δα, 1) .* cda(psdt, Δξ, 2) .+  cdam(psdt, Δα, Δξ))
 	psdt = stack([solve1dξ(a, b, c, d, w) for (a, b, c, d, w) in zip(eachrow(ξa2d), eachrow(ξb2d), eachrow(ξc2d), eachrow(ξd2d), eachrow(psdt))])'
 	psdt[begin, :]=@view psdt[begin+1, :]
 	psdt[end, :]=@view psdt[end-1, :]
 
 	#α-direction
-	if boundaryTα[begin] == 1  #updated boundary value for the time varying boundary condition
-		psdt[begin,:].=psdt[begin+1,:].*(ς+1).-ς*maxlnf
-	end
 	αd2d = d2d .* ( cda(psdt, Δα, 1) .* cda(psdt, Δξ, 2) .+  cdam(psdt, Δα, Δξ)) .- rtau
 	psdt = stack([solve1dα(a, b, c, d, w) for (a, b, c, d, w) in zip(eachcol(αa2d), eachcol(αb2d), eachcol(αc2d), eachcol(αd2d), eachcol(psdt))])
 	psdt[:, begin]=@view psd[:, begin]
@@ -184,11 +175,9 @@ const αₗ = asin(L^(-3.0/2.0)*(4.0-3.0/L)^(-1.0/4.0))
 const Δt = 20.0
 const trecord = collect(0:10).*8640.0
 
-#First element of boundaryTα can choose 1 or -1, second element of boundaryTα can choose -1, first element of boundaryTξ can choose 0 and second element of boundaryTξ can choose 1 or -1.
-const boundaryTα = [1,-1]
-const boundaryTξ = [0,1]
-
-const ς=9
+#First element of boundaryTα can choose 1 or -1, second element of boundaryTα can choose -1, first element of boundaryTξ can choose 0 and second element of boundaryTξ can choose -1.
+const boundaryTα = [-1,-1]
+const boundaryTξ = [0,-1]
 
 const dcfile = "DiffusionCoefficients.jld2"
 const nα, np, α, p, Dαα, Dpp, Dαp=readbd(dcfile, αₗ, boundaryTα)
@@ -221,18 +210,17 @@ const d2d = Dαp ./ p2d
 
 solve1dα(a, b, c, d, w) = solve1d(a, b, c, d, w, Δα, Δt, boundaryTα)
 solve1dξ(a, b, c, d, w) = solve1d(a, b, c, d, w, Δξ, Δt, boundaryTξ)
-solve2dαξ(psd, maxlnf) = solve2d(αa2d, αb2d, αc2d, ξa2d, ξb2d, ξc2d, d2d, psd, rtau, Δα, Δξ, boundaryTα, boundaryTξ, ς, maxlnf)
+solve2dαξ(psd) = solve2d(αa2d, αb2d, αc2d, ξa2d, ξb2d, ξc2d, d2d, psd, rtau, Δα, Δξ, boundaryTα, boundaryTξ)
 
 function fokkerplanck2d!(t, trecord, logpsdrecord)
 	tind = 2
 	tend = maximum(trecord)
 	logpsd = logpsdrecord[1,:,:]
-	maxlnf = maximum(logpsd)
 
 	while round(t; digits=1) < tend
-		logpsd = solve2dαξ(logpsd, maxlnf)
+		logpsd = solve2dαξ(logpsd)
 		t = t + 2.0Δt
-		if abs(round(t; digits=1)-trecord[tind])<2.0Δt
+		if abs(round(t; digits=3)-trecord[tind])<2.0Δt
 			logpsdrecord[tind,:,:] .= logpsd
 			tind = tind+1
 			@show t::Float64, maximum(logpsd)::Float64
@@ -249,7 +237,6 @@ function plotflux(trecord, psdrecord, ptime)
 	gr = fig[1, 2] = GridLayout()
 
 	axs = [Axis(gl[i, 1]
-	,xlabel=rich(rich("α", font = :italic), " (Deg)")
 	,ylabel=rich(rich("E",font = :italic), subscript("k"), " (MeV)")
 	,xticklabelsvisible=false, yscale=log10, xticks=range(0, 90, step=30), yticks=[0.2,1,5]
 	,xminorticksvisible = true, xminorticks = IntervalsBetween(3)
@@ -257,30 +244,33 @@ function plotflux(trecord, psdrecord, ptime)
 	,limits=(0,90,0.2,5)
 	) for i in eachindex(ptime)]
 
+	axs[end].xticklabelsvisible=true
+	axs[end].xlabel=rich(rich("α", font = :italic), " (Deg)")
+
 	colorrange=(1e-6,1e0)
 	txt = ["(a)", "(b)", "(c)", "(d)"]
 	for (i, pt) in enumerate(ptime)
 		flux = psdrecord[pt, :, :] .* p2d.^2
 		hm = heatmap!(axs[i], αd, Ek, flux, colorrange=colorrange, colorscale=log10, lowclip = :white)
-		text!(axs[i],  0.0, 5.0, text=rich(txt[i], rich(" ∂f/∂α|",subscript("α=",rich("0",font = :regular),font = :italic),font = :italic),"=0 ",rich("t=",font=:italic), "$(trecord[pt]) s"," 90×80 grid ", rich("∆",rich("t",font = :italic),"=$Δt s" )),align=(:left,:top),offset=(4,-2))
+		if boundaryTα[begin] == -1
+			text!(axs[i],  0.0, 5.0, text=rich(txt[i], rich(" ∂f/∂α|",subscript("α=",rich("0",superscript("∘"),font = :regular),font = :italic),font = :italic),"=0 ",rich("t=",font=:italic), "$(trecord[pt]) s"," 90×80 grids ", rich("∆",rich("t",font = :italic),"=$Δt s" )),align=(:left,:top),offset=(4,-2))
+		else boundaryTα[begin] == 1
+			text!(axs[i],  0.0, 5.0, text=rich(txt[i], rich("f|",subscript("α=α",subscript("L",font = :regular)),font = :italic),"=0 ",rich("t=",font=:italic), "$(trecord[pt]) s"," 90×80 grids ", rich("∆",rich("t",font = :italic),"=$Δt s" )),align=(:left,:top),offset=(4,-2))
+		end
 	end
 	
-	linkxaxes!(axs[1:4]...)
-	hidexdecorations!.(axs[1:3])
-
-	Colorbar(gr[1:20,1], colorrange=colorrange, scale=log10, valign=:top,halign=:left,ticksize=5.0
+	Colorbar(gr[1:27,1], colorrange=colorrange, scale=log10, valign=:top,halign=:left,ticksize=5.0
 	,label=rich("Differential Flux ",rich("j", font = :italic)," (arbitrary units)")
 	,ticks=10.0 .^ range(-6, 0)
 	,tickformat = values -> [rich("10",superscript("$(round(Int64, log10(value)))")) for value in values])
 		
-
 	elem_a=0.5
 	elem_b=0.2
 	elem_c=1.1
 	elem_d=0.8
 	elem_1= [PolyElement(color = :white, strokecolor = :black, strokewidth = 1.0, points = Point2f[(elem_a,elem_b), (elem_c, elem_b), (elem_c,elem_d),(elem_a,elem_d)])]
 
-	Legend(gr[21,1],[elem_1],[rich(" <10",superscript("-6"))], framevisible = false,halign=:left,labelsize=15.0,padding=(-10,0,0,0), patchlabelgap = -1)
+	Legend(gr[28,1],[elem_1],[rich(" <10",superscript("-6"))], framevisible = false,halign=:left,labelsize=15.0,padding=(-10,0,0,0), patchlabelgap = -1)
 	fig
 end
 
@@ -305,6 +295,7 @@ save("FPdemo.pdf", fig)
 jldopen("FPpsdDemonstration.jld2", "w") do file
     file["logpsdrecord"] = logpsdrecord
 	file["trecord"] = trecord
+	file["maxpsd0"] = maxpsd0
 end
 
 
@@ -318,21 +309,3 @@ using BenchmarkTools
 using JET
 @report_opt fokkerplanck2d!(t, trecord, logpsdrecord)
 =#
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
- 
-
